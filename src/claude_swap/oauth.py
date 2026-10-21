@@ -543,13 +543,6 @@ def build_usage_result(data: dict) -> dict | None:
     return result if result else None
 
 
-# Label of the 5-hour window as ``relevant_windows`` reports it. The only
-# window that is NOT weekly: every consumer that treats the 5h window
-# differently (``lines.window_line``, the TUI's per-row switch-line tick) keys
-# on this constant, so the label is spelled in one place.
-FIVE_HOUR_LABEL = "5h"
-
-
 # Top-level usage keys that are not extra windows: the two legacy windows
 # (already surfaced) and the structured blocks handled elsewhere.
 _NOT_EXTRA_WINDOWS = frozenset({"five_hour", "seven_day", "extra_usage", "limits", "spend"})
