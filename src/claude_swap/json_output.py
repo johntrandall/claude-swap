@@ -131,7 +131,28 @@ def usage_to_json(usage: dict, fetched_at: float | None = None) -> dict:
         out["spend"] = spend_out
     if "scoped" in usage:
         out["scoped"] = [_scoped_window_to_json(w, fetched_at) for w in usage["scoped"]]
+    if "credits" in usage:
+        credits = usage["credits"]
+        out["credits"] = {
+            json_key: credits.get(key) for key, json_key, _ in _CREDITS_FIELDS
+        }
+        out["credits"]["currency"] = credits.get("currency") or "USD"
     return out
+
+
+# (internal key, JSON key, type) for ``usage.credits``. Every field is
+# nullable: None means the API left it out.
+_CREDITS_FIELDS: tuple[tuple[str, str, type | tuple[type, ...]], ...] = (
+    ("enabled", "enabled", bool),
+    ("user_disabled", "userDisabled", bool),
+    ("disabled_reason", "disabledReason", str),
+    ("ever_enabled", "everEnabled", bool),
+    ("balance", "balance", (int, float)),
+    ("auto_reload", "autoReload", bool),
+    ("can_purchase", "canPurchase", bool),
+    ("can_toggle", "canToggle", bool),
+    ("currency", "currency", str),
+)
 
 
 def _is_number(value: object) -> bool:
@@ -203,7 +224,26 @@ def usage_from_json(usage: object) -> dict:
                 raise ValueError(f"{label}.name must be a non-empty string")
             scoped.append({"name": name, **entry})
         out["scoped"] = scoped
-    if not out:
+    if "credits" in usage:
+        credits = usage["credits"]
+        if not isinstance(credits, dict):
+            raise ValueError("credits must be an object")
+        out_credits: dict = {}
+        for key, json_key, kind in _CREDITS_FIELDS:
+            value = credits.get(json_key)
+            if value is not None and (
+                not isinstance(value, kind) or (kind is not bool and isinstance(value, bool))
+            ):
+                raise ValueError(f"credits.{json_key} has the wrong type")
+            out_credits[key] = value
+        if out_credits["balance"] is not None:
+            if not _is_number(out_credits["balance"]):
+                raise ValueError("credits.balance must be a finite number")
+            out_credits["balance"] = float(out_credits["balance"])
+        out_credits["currency"] = out_credits["currency"] or "USD"
+        out["credits"] = out_credits
+    # Credit state alone is not a usage reading (see build_usage_result).
+    if not out.keys() - {"credits"}:
         raise ValueError("usage carries no windows")
     return out
 

@@ -1522,3 +1522,81 @@ class TestLoginExpiresAtIso:
     ])
     def test_anything_but_a_positive_epoch_is_unknown(self, creds):
         assert oauth.login_expires_at_iso(creds) is None
+
+
+class TestCreditsEntry:
+    """Usage-credit state reaches the result whether credits are on or off.
+
+    Adapted from #471 (@sushrutikhar).
+    """
+
+    RESPONSE = {
+        "five_hour": {"utilization": 73.0, "resets_at": "2026-10-16T12:40:00+00:00"},
+        "seven_day": None,
+        "extra_usage": {
+            "is_enabled": False, "monthly_limit": None, "used_credits": None, "utilization": None,
+            "currency": "USD", "disabled_reason": "out_of_credits", "credits_ever_enabled": True,
+            "user_disabled": False,
+        },
+        "spend": {
+            "used": {"amount_minor": 0, "currency": "USD", "exponent": 2},
+            "enabled": False, "disabled_reason": "out_of_credits",
+            "balance": {"amount_minor": 1250, "currency": "USD", "exponent": 2},
+            "auto_reload": False, "can_purchase_credits": True, "can_toggle": True,
+        },
+        "limits": [],
+    }
+
+    def test_credits_are_reported_when_off(self):
+        result = oauth.build_usage_result(self.RESPONSE)
+        assert "spend" not in result
+        assert result["credits"] == {
+            "enabled": False, "user_disabled": False, "disabled_reason": "out_of_credits",
+            "ever_enabled": True, "balance": 12.5, "auto_reload": False,
+            "can_purchase": True, "can_toggle": True, "currency": "USD",
+        }
+
+    def test_credits_never_count_toward_headroom(self):
+        result = oauth.build_usage_result(self.RESPONSE)
+        assert [label for label, _, _ in oauth.relevant_windows(result)] == ["5h"]
+
+    def test_spend_block_alone_still_gives_the_state(self):
+        result = oauth.build_usage_result({
+            "five_hour": {"utilization": 1.0, "resets_at": None},
+            "spend": {"enabled": True, "used": {"amount_minor": 0, "currency": "EUR", "exponent": 2}},
+        })
+        assert result["credits"]["enabled"] is True
+        assert result["credits"]["currency"] == "EUR"
+
+    def test_no_credit_blocks_means_no_credits_entry(self):
+        result = oauth.build_usage_result({"five_hour": {"utilization": 1.0, "resets_at": None}})
+        assert "credits" not in result
+
+    @pytest.mark.parametrize("balance", [
+        {"amount_minor": 5, "exponent": 10000},
+        {"amount_minor": 5, "exponent": -10000},
+        {"amount_minor": float("inf"), "exponent": 2},
+        {"amount_minor": float("nan"), "exponent": 2},
+    ])
+    def test_absurd_money_reads_as_unknown(self, balance):
+        result = oauth.build_usage_result({
+            "five_hour": {"utilization": 1.0, "resets_at": None},
+            "spend": {"balance": balance},
+        })
+        assert result["credits"]["balance"] is None
+
+    def test_credits_alone_are_not_a_usage_reading(self):
+        assert oauth.build_usage_result({"extra_usage": {"is_enabled": False}}) is None
+
+    def test_odd_shapes_do_not_break_the_reading(self):
+        result = oauth.build_usage_result({
+            "five_hour": {"utilization": 1.0, "resets_at": None},
+            "extra_usage": {"is_enabled": "yes", "currency": 5, "user_disabled": 0},
+            "spend": {"used": 7, "balance": 12, "auto_reload": "on", "can_toggle": None},
+        })
+        assert result["five_hour"]["pct"] == 1.0
+        assert result["credits"] == {
+            "enabled": None, "user_disabled": None, "disabled_reason": None,
+            "ever_enabled": None, "balance": None, "auto_reload": None,
+            "can_purchase": None, "can_toggle": None, "currency": "USD",
+        }

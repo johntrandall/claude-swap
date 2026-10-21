@@ -18,6 +18,7 @@ from claude_swap.json_output import (
     account_row,
     error_envelope,
     usage_fields,
+    usage_from_json,
     usage_to_json,
 )
 from claude_swap.credentials import ActiveCredentials
@@ -801,3 +802,99 @@ class TestUsageFromJson:
 
         with pytest.raises(ValueError):
             usage_from_json(usage)
+
+
+class TestCreditsJson:
+    def test_round_trip(self):
+        usage = oauth.build_usage_result({
+            "five_hour": {"utilization": 5.0, "resets_at": "2026-10-16T12:40:00+00:00"},
+            "extra_usage": {"is_enabled": False, "disabled_reason": "out_of_credits",
+                            "credits_ever_enabled": True, "user_disabled": True, "currency": "USD"},
+            "spend": {"balance": {"amount_minor": 1250, "currency": "USD", "exponent": 2},
+                      "auto_reload": True, "can_purchase_credits": False, "can_toggle": True},
+        })
+        out = usage_to_json(usage)
+        assert out["credits"] == {
+            "enabled": False, "userDisabled": True, "disabledReason": "out_of_credits",
+            "everEnabled": True, "balance": 12.5, "autoReload": True,
+            "canPurchase": False, "canToggle": True, "currency": "USD",
+        }
+        back = usage_from_json(out)
+        assert back["credits"] == usage["credits"]
+
+    @pytest.mark.parametrize("credits", [
+        "on",
+        {"balance": "lots"},
+        {"enabled": 1},
+        {"canToggle": "yes"},
+        {"balance": True},
+        {"balance": float("inf")},
+    ])
+    def test_malformed_credits_are_refused(self, credits):
+        with pytest.raises(ValueError):
+            usage_from_json({"fiveHour": {"pct": 1.0}, "credits": credits})
+
+
+    def test_credits_alone_are_refused(self):
+        with pytest.raises(ValueError):
+            usage_from_json({"credits": {"enabled": False}})
+
+
+class TestCreditsStateInListAndStatusJson:
+    """``list --json`` / ``status --json`` tell credits off from on from unknown.
+
+    Both commands build ``usage`` through ``usage_fields``. The fixture is a
+    real ``/api/oauth/usage`` reply for a Max account with usage credits off,
+    which carries no identifiers.
+    """
+
+    REPLY = json.loads(
+        (Path(__file__).parent / "fixtures" / "usage_reply_credits_off.json").read_text()
+    )
+
+    def _usage(self, reply: dict) -> tuple[str, dict | None]:
+        return usage_fields(oauth.build_usage_result(reply))
+
+    def _with_extra_usage(self, **fields) -> dict:
+        reply = json.loads(json.dumps(self.REPLY))
+        reply["extra_usage"].update(fields)
+        return reply
+
+    def test_off_is_reported_as_off(self):
+        status, usage = self._usage(self.REPLY)
+        assert status == "ok"
+        assert usage["credits"]["enabled"] is False
+        assert usage["credits"]["userDisabled"] is False
+        assert usage["credits"]["canToggle"] is False
+        assert "spend" not in usage
+
+    def test_on_with_a_monthly_limit_keeps_spend_and_reports_on(self):
+        status, usage = self._usage(self._with_extra_usage(
+            is_enabled=True, monthly_limit=30000, used_credits=1250, utilization=4.0,
+            currency="USD",
+        ))
+        assert status == "ok"
+        assert usage["credits"]["enabled"] is True
+        assert usage["spend"]["used"] == 12.5
+        assert usage["spend"]["limit"] == 300.0
+
+    def test_on_without_a_limit_is_reported_as_on(self):
+        # monthly_limit null means unlimited. `spend` cannot be drawn without a
+        # limit, so before `credits` this account looked the same as one
+        # with credits off.
+        status, usage = self._usage(self._with_extra_usage(
+            is_enabled=True, monthly_limit=None, used_credits=0, utilization=None,
+        ))
+        assert status == "ok"
+        assert usage["credits"]["enabled"] is True
+        assert "spend" not in usage
+
+    def test_missing_credit_blocks_leave_credits_out(self):
+        reply = {k: v for k, v in self.REPLY.items() if k not in ("extra_usage", "spend")}
+        status, usage = self._usage(reply)
+        assert status == "ok"
+        assert "credits" not in usage
+
+    def test_api_key_account_has_no_usage_at_all(self):
+        from claude_swap.json_output import USAGE_API_KEY
+        assert usage_fields(USAGE_API_KEY) == ("api_key", None)

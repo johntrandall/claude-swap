@@ -359,6 +359,8 @@ An account row also carries an additive `alias` field once one is set with `cswa
 
 Weekly windows (`sevenDay` and per-model `scoped` entries — never `fiveHour`) additively carry pace fields once the week is ~a day old: `expectedPct` (where usage would sit if spread evenly across the week) and `aheadOfPace` (`true` when meaningfully above that — the same signal the human views show as an `(ahead)`/`(ahead of pace)` marker). `projectedExhaustionAt`/`willLastToReset` extrapolate the current rate into an ETA to 100% and a yes/no "will it last to the reset"; they stay `--json`-only since a linear projection is too rough to present as fact in the UI.
 
+`usage` additively carries `credits` whenever the usage API reports usage-credit (extra usage) state, on or off: `enabled`, `userDisabled`, `disabledReason` (e.g. `"out_of_credits"`), `everEnabled`, `balance` (in `currency`, e.g. `12.5`), `autoReload`, `canPurchase` and `canToggle`, each `null` when the API leaves it out. `credits` is absent when the reply has no credit state at all, so a script can tell "off" (`enabled: false`) from "unknown". `spend` stays as before (present only while credits are on with a monthly limit). `credits` does not count toward headroom or switching, and round-trips through `import-usage`.
+
 </details>
 
 `cswap auto --json` emits an event *stream* instead — one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}` with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `error`). The contract is additive: new kinds and fields may appear, so scripts should ignore unknown ones.

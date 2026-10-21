@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sys
 import urllib.error
 import urllib.request
@@ -507,6 +508,10 @@ def build_usage_result(data: dict) -> dict | None:
             except (TypeError, ValueError) as e:
                 _logger.debug("extra_usage parse failed: %r", e)
 
+    credits = _credits_entry(data.get("extra_usage"), data.get("spend"))
+    if credits:
+        result["credits"] = credits
+
     # Per-model weekly limits live in the newer ``limits`` array as
     # ``weekly_scoped`` entries carrying a ``scope.model.display_name`` (e.g.
     # "Fable"). The legacy five_hour/seven_day keys above never expose these, so
@@ -532,7 +537,9 @@ def build_usage_result(data: dict) -> dict | None:
         if scoped:
             result["scoped"] = scoped
 
-    return result if result else None
+    # Credit state alone is not a usage reading: with no window or spend it
+    # stays None, as before ``credits`` existed.
+    return result if result.keys() - {"credits"} else None
 
 
 # Label of the 5-hour window as ``relevant_windows`` reports it. The only
@@ -540,6 +547,54 @@ def build_usage_result(data: dict) -> dict | None:
 # differently (``lines.window_line``, the TUI's per-row switch-line tick) keys
 # on this constant, so the label is spelled in one place.
 FIVE_HOUR_LABEL = "5h"
+
+
+def _money(value: object) -> float | None:
+    """Dollars from a ``{"amount_minor", "exponent"}`` money object, else None."""
+    if not isinstance(value, dict):
+        return None
+    amount, exponent = value.get("amount_minor"), value.get("exponent", 2)
+    if not isinstance(amount, (int, float)) or isinstance(amount, bool) or not math.isfinite(amount):
+        return None
+    if not isinstance(exponent, int) or isinstance(exponent, bool) or not 0 <= exponent <= 6:
+        return None
+    return float(amount) / (10 ** exponent)
+
+
+def _bool_or_none(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _credits_entry(extra_usage: object, spend: object) -> dict | None:
+    """Usage-credit state, whether or not credits are on.
+
+    ``spend`` above covers only an enabled account with a monthly limit, so
+    "credits off", "credits on with no limit" and "the API said nothing" all
+    used to look the same. This keeps the state itself: on or off, whether
+    the owner switched it off, why it is off (for example ``out_of_credits``),
+    whether it was ever on, the prepaid balance, auto-reload, and whether this
+    login can buy credits or toggle them. Fields the API leaves out stay None;
+    no ``extra_usage``/``spend`` block at all means no entry.
+    """
+    eu = extra_usage if isinstance(extra_usage, dict) else {}
+    sp = spend if isinstance(spend, dict) else {}
+    if not eu and not sp:
+        return None
+    enabled = eu.get("is_enabled") if isinstance(eu.get("is_enabled"), bool) else sp.get("enabled")
+    reason = eu.get("disabled_reason") or sp.get("disabled_reason")
+    used = sp.get("used")
+    currency = eu.get("currency") or (used.get("currency") if isinstance(used, dict) else None)
+    return {
+        "enabled": _bool_or_none(enabled),
+        "user_disabled": _bool_or_none(eu.get("user_disabled")),
+        "disabled_reason": reason if isinstance(reason, str) else None,
+        "ever_enabled": _bool_or_none(eu.get("credits_ever_enabled")),
+        "balance": _money(sp.get("balance")),
+        "auto_reload": _bool_or_none(sp.get("auto_reload")),
+        "can_purchase": _bool_or_none(sp.get("can_purchase_credits")),
+        "can_toggle": _bool_or_none(sp.get("can_toggle")),
+        "currency": currency if isinstance(currency, str) and currency else "USD",
+    }
 
 
 def relevant_windows(
